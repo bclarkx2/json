@@ -125,10 +125,15 @@ type UnmarshalTypeError struct {
 	Offset int64        // error occurred after reading Offset bytes
 	Struct string       // name of the struct type containing the field
 	Field  string       // the full path from root node to the field, include embedded struct
+
+	Err error // underlying error
 }
 
 func (e *UnmarshalTypeError) Error() string {
 	if e.Struct != "" || e.Field != "" {
+		if e.Err != nil {
+			return "json: cannot unmarshal " + e.Value + " into Go struct field " + e.Struct + "." + e.Field + " of type " + e.Type.String() + ": " + e.Err.Error()
+		}
 		return "json: cannot unmarshal " + e.Value + " into Go struct field " + e.Struct + "." + e.Field + " of type " + e.Type.String()
 	}
 	return "json: cannot unmarshal " + e.Value + " into Go value of type " + e.Type.String()
@@ -591,8 +596,10 @@ func (d *decodeState) array(v reflect.Value) error {
 	return nil
 }
 
-var nullLiteral = []byte("null")
-var textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+var (
+	nullLiteral         = []byte("null")
+	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+)
 
 // object consumes an object from d.data[d.off-1:], decoding into v.
 // The first byte ('{') of the object has been read already.
@@ -883,7 +890,14 @@ func (d *decodeState) literalStore(item []byte, v reflect.Value, fromQuoted bool
 			}
 			panic(phasePanicMsg)
 		}
-		return ut.UnmarshalText(s)
+		if unmarshalErr := ut.UnmarshalText(s); unmarshalErr != nil {
+			return &UnmarshalTypeError{
+				Value:  string(s),
+				Type:   reflect.TypeOf(ut).Elem(),
+				Offset: int64(d.readIndex()),
+			}
+		}
+		return nil
 	}
 
 	v = pv
@@ -1045,7 +1059,7 @@ func (d *decodeState) valueInterface() (val any) {
 
 // arrayInterface is like array but returns []any.
 func (d *decodeState) arrayInterface() []any {
-	var v = make([]any, 0)
+	v := make([]any, 0)
 	for {
 		// Look ahead for ] - can only happen on first iteration.
 		d.scanWhile(scanSkipSpace)
